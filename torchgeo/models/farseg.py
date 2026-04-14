@@ -64,7 +64,44 @@ class FarSeg(Module):
         else:
             raise ValueError(f'unknown backbone: {backbone}.')
 
-        self.backbone = getattr(resnet, backbone)(weights=backbone_weights)
+        # Initialize backbone without weights first
+        self.backbone = getattr(resnet, backbone)(weights=None)
+        
+        # Load weights if provided, handling both torchvision and torchgeo weights
+        if backbone_weights is not None:
+            # Check if it's a torchgeo weights class by checking the module
+            is_torchgeo_weights = (
+                hasattr(backbone_weights, 'url') and 
+                'torchgeo' in type(backbone_weights).__module__
+            )
+            
+            if is_torchgeo_weights:
+                # TorchGeo weights - load manually from URL
+                from torch.hub import load_state_dict_from_url
+                
+                # Download and load state dict
+                state_dict = load_state_dict_from_url(backbone_weights.url, progress=False)
+                
+                # Handle different state dict formats
+                if isinstance(state_dict, dict):
+                    # Some checkpoints have nested 'state_dict' key
+                    if 'state_dict' in state_dict:
+                        state_dict = state_dict['state_dict']
+                    
+                    # Filter and rename keys for backbone
+                    backbone_state_dict = {}
+                    for key, value in state_dict.items():
+                        # Remove 'backbone.' prefix if present
+                        new_key = key.replace('backbone.', '') if key.startswith('backbone.') else key
+                        # Only load backbone-relevant keys
+                        if new_key.startswith(('conv1', 'bn1', 'layer1', 'layer2', 'layer3', 'layer4', 'fc')):
+                            backbone_state_dict[new_key] = value
+                    
+                    # Load state dict, ignoring fc layer mismatch (different num_classes)
+                    self.backbone.load_state_dict(backbone_state_dict, strict=False)
+            else:
+                # TorchVision weights - use directly
+                self.backbone = getattr(resnet, backbone)(weights=backbone_weights)
 
         self.fpn = FPN(
             in_channels_list=[max_channels // (2 ** (3 - i)) for i in range(4)],
